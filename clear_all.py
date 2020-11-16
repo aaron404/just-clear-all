@@ -25,10 +25,18 @@ colors = {
     (15, 6, 4): 4,
     (0, 10, 9): 5,
     (2, 10, 9): 5,
+    (8, 6, 14): 6,
     (7, 6, 15): 6,
     (15, 5, 11): 7,
+    (15, 5, 12): 7,
     (15, 6, 11): 7,
-    (14, 2, 4): 8
+    (14, 2, 4): 8,
+    (14, 4, 4): 8,
+    (14, 3, 4): 8,
+    (15, 15, 3): 9,
+    (11, 8, 8): 10,
+    (11, 8, 7): 10,
+    (8, 0, 4): 11
 }
 
 print_colors = defaultdict(lambda: colorama.Fore.WHITE)
@@ -162,18 +170,21 @@ def get_moves(board):
     return unique_moves
 
 def solve(board, moves, score):
-    global stop_threads, high_score, best_moves, perf
+    global stop_threads, high_score, best_moves, perfect
     if stop_threads:
         return
     valid_moves = get_moves(board)
     if not len(valid_moves):
         score += get_bonus(board)
+        lock.acquire()
         if score > high_score:
             perf = bool(board[BOARD_SIZE-2][0] == board[BOARD_SIZE-1][1] == 0)
-            print('{: >6} {} {}'.format(score, [" ", "p"][perf], moves))
+            print('{: >6} {} {}'.format(score, [" ", "p"][perf], moves), flush=True)
             high_score = score
             best_moves = moves
             perfect = perf
+            sys.stdout.flush()
+        lock.release()
         return
     for x, y, sub_board, new_score in valid_moves:
         if len(moves) < THREAD_DEPTH:
@@ -186,31 +197,14 @@ class Board:
     def __init__(self, board, moves, score):
         self.board = board
         self.moves = moves
-        self.scroe = score
+        self.score = score
 
     def run(self):
-        solve(self.board, moves, score)
-"""lvl 1
-1000
-500
-400
-300
-200
-100
-lvl 2
-1500
-750
-600
-450
-300
-lvl 3
-2000
-1000
-800
-600
+        solve(self.board, self.moves, self.score)
 
-"""
-THREAD_DEPTH = 1
+lock = threading.Lock()
+
+THREAD_DEPTH = 2
 stop_threads = False
 if __name__ == "__main__":
     
@@ -239,7 +233,8 @@ if __name__ == "__main__":
             time.sleep(5)
     except KeyboardInterrupt:
         stop_threads = True
-        
+
+    print(high_score, best_moves)
 
     if not input("solve? "):
         exit()
@@ -254,6 +249,3 @@ if __name__ == "__main__":
         print(x, y, tx, ty)
         ADB.tap(tx, ty, 500)
         ADB.tap(tx, ty, 500)
-        time.sleep(1)
-
-    pass
