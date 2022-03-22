@@ -1,11 +1,8 @@
 use std::cmp::min;
-use std::collections::{HashSet, HashMap};
+use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::hash::Hash;
-use std::thread;
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::Instant;
 
 
@@ -99,8 +96,8 @@ impl Board {
         }
     }
 
-    fn get_valid_moves(&self) -> Vec<Move> {
-        let mut valid_moves = Vec::new();
+    fn get_valid_moves(&self, valid_moves: &mut [Move]) -> usize {
+        // let mut valid_moves = Vec::new();
 
         let b = self.board.clone(); // TODO: local clone vs use reference
         let mut valid = [[0; 8]; 8];
@@ -149,14 +146,16 @@ impl Board {
             }
         }
 
+        let mut move_count = 0;
         for x in 0..BOARD_SIZE {
             for y in 0..BOARD_SIZE {
                 if valid[x][y] == 1 {
-                    valid_moves.push(Move { pos: (x, y) })
+                    valid_moves[move_count] = Move { pos: (x, y) };
+                    move_count += 1;
                 }
             }
         }
-        valid_moves
+        move_count
     }
 
     fn is_cleared(&self) -> bool {
@@ -249,116 +248,96 @@ impl fmt::Display for Board {
     }
 }
 
-#[allow(dead_code)]
-fn print_vec(moves: &Vec<Move>) {
-    print!("Moves: [",);
-    for m in moves.iter() {
-        print!("({}, {}), ", m.pos.0, m.pos.1);
-    }
-    println!("]");
-}
+const STACK_SIZE: usize = 48;
 
-struct StackFrame {
+#[derive(Clone, Copy)]
+struct Frame {
     board: Board,
-    moves: Vec<Move>,
+    moves: [Move; STACK_SIZE],
     num_moves: usize,
 }
 
-#[allow(dead_code)]
-fn print_stack(stack: &Vec<StackFrame>) {
-    // let mut count = 0;
-    // let mut prod = 1;
-    let mut i = 0;
-    for StackFrame {board, moves, num_moves: _ } in stack {
-        // let l = moves.len();
-        // count += l;
-        // prod *= if l > 0 { l } else { 1 };
-        println!("depth: {}, last_move: ({}, {}), score: {}", i, board.mve.pos.0, board.mve.pos.1, board.score);
-        i += 1;
-    }
-    println!("======================");
-    // println!("total moves: {}, est. tree size {}", count, prod);
-    
+#[derive(Clone, Copy)]
+struct Stack {
+    frames: [Frame; STACK_SIZE],
+    frame_count: usize,
+
 }
 
-fn solve2(starting_board: Board) {
+fn solve(starting_board: Board) {
     let mut hashes: HashMap<BoardHash, u32> = HashMap::new();
-    let mut stack: Vec<StackFrame> = Vec::new();
-
-    let mut board_stack: Vec<Board> = Vec::new();
-    let mut moves_stack: Vec<Vec<Move>> = Vec::new();
+    let mut stack = Stack {
+        frames: [
+            Frame {
+                board: Board::new(),
+                moves: [Move { pos: (0, 0) }; STACK_SIZE],
+                num_moves: 0,
+            }; STACK_SIZE
+        ],
+        frame_count: 0,
+    };
 
     let mut best_score = 0u32;
 
-    let starting_moves = starting_board.get_valid_moves();
-    let num_moves = starting_moves.len();
-    stack.push(StackFrame {
-        board: starting_board,
-        moves: starting_moves,
-        num_moves: num_moves,
-    });
+    stack.frames[0].board = starting_board;
+    stack.frames[0].num_moves = starting_board.get_valid_moves(&mut stack.frames[0].moves);
+    stack.frame_count = 1;
 
-    // println!("{:?}", stack);
-    // let mut progress = 0;
+    let t0 = Instant::now();
 
-    // let t0 = Instant::now();
+    let mut cache_hit_keep_count = 0;
+    let mut cache_hit_drop_count = 0;
 
-    // while !stack.last().unwrap().1.is_empty() {
-    while !stack.is_empty() {
-        // print_stack(&stack);
-        let l = stack.len();
-        let StackFrame {board, moves, num_moves: _} = stack.last_mut().unwrap();
-        if moves.is_empty() {
-            // leaf of tree, check final score
-            // println!("no more moves, depth: {}", stack.len());
-            // print_stack(&stack);
-            // break;
-            let mut total = board.score;
-            // for StackFrame {board: b, moves: _, num_moves: _} in &stack {
-            //     total += b.score;
-            // }
-            total += board.get_bonus();
-            if total > best_score {
-                if board.is_cleared() {
-                    print!("[P] ");
+    while stack.frame_count > 0 {
+        // let frame = stack.frames.get(stack.frame_count-1).unwrap(); // TODO: get_unchecked
+        // TODO: iterate reverse move order to verify correctness
+        match stack.frames[stack.frame_count-1].num_moves {
+            0 => {
+                // no more moves for current board
+                let total = stack.frames[stack.frame_count-1].board.score + stack.frames[stack.frame_count-1].board.get_bonus(); // TODO: combine these scores
+                if total > best_score {
+                    if stack.frames[stack.frame_count-1].board.is_cleared() {
+                        print!("[P] ");
+                    }
+                    let rate = (cache_hit_keep_count + cache_hit_drop_count) as f32 / (Instant::now() - t0).as_secs_f32() * 0.000001;
+                    print!("new best score: {}, k/d: {:.2}, rate: {:.2}M, moves: [", total, (cache_hit_keep_count as f32 / cache_hit_drop_count as f32), rate);
+                    for i in 1..stack.frame_count {
+                        print!("{:?}, ", stack.frames[i].board.mve.pos);
+                    }
+                    println!("]");
+                    best_score = total;
                 }
-                println!("new best score: {}", total);
-                best_score = total;
-            }
-            // if total == 2550 {
-            //     break;
-            // }
-            stack.pop();
-        } else {
-            if l < 4 {
-                for _ in 0..l-1 {
-                    print!("-");
-                }
-                println!("progress: {}", moves.len());
-            }
-            let m = moves.pop().unwrap();
-            let mut new_board = board.click(m);
-            new_board.score += board.score;
-            
-            let h = new_board.hash();
-            match hashes.get(&h) {
-                Some(val) if val > &board.score => continue,
-                _ => { hashes.insert(h, board.score); },
-            }
+                // "pop" the stack
+                stack.frame_count -= 1;
+            },
+            _ => {
+                // if stack.frame_count < 4 {
+                //     for _ in 0..stack.frame_count-1 {
+                //         print!("-");
+                //     }
+                //     println!("progress: {}", stack.frames[stack.frame_count-1].num_moves);
+                // }
+                let m = stack.frames[stack.frame_count-1].moves.get(stack.frames[stack.frame_count-1].num_moves-1).unwrap(); // TODO: get_unchecked
+                stack.frames[stack.frame_count-1].num_moves -= 1;
+                stack.frames[stack.frame_count].board = stack.frames[stack.frame_count-1].board.click(*m);
+                stack.frames[stack.frame_count].board.score += stack.frames[stack.frame_count-1].board.score;
 
-            // match hashes.insert(new_board.hash(), board.score) {
-            //     Some(val) => { },
-            //     _ => {}
-            // }
-            let new_moves = new_board.get_valid_moves();
-            let num_moves = new_moves.len();
-            stack.push(StackFrame { board: new_board, moves: new_moves, num_moves: num_moves })
+                let h = stack.frames[stack.frame_count].board.hash();
+                match hashes.get(&h) {
+                    Some(val) if val > &stack.frames[stack.frame_count-1].board.score => { cache_hit_keep_count += 1; continue; },
+                    _ => { hashes.insert(h, stack.frames[stack.frame_count-1].board.score); cache_hit_drop_count += 1;  },
+                }
+
+                stack.frames[stack.frame_count].num_moves = stack.frames[stack.frame_count].board.get_valid_moves(&mut stack.frames[stack.frame_count].moves);
+                stack.frame_count += 1;
+            },
         }
     }
 
-    // println!("time: {}", (Instant::now() - t0).as_millis());
+    println!("time: {}", (Instant::now() - t0).as_millis());
 
 }
+
 static mut LEVEL: u32 = 1;
 
 fn main() {
@@ -421,5 +400,5 @@ fn main() {
     //     std::mem::swap(&mut primed_boards2, &mut primed_boards);
     // }
 
-    solve2(board.clone());
+    solve(board.clone());
 }
