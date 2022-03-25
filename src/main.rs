@@ -1,10 +1,14 @@
+#![allow(dead_code)]
+
 use std::cmp::min;
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
+use std::mem::MaybeUninit;
 use std::hash::Hash;
 use std::time::Instant;
 
+// use bitintr::x86::bmi2;
 
 const BOARD_SIZE: usize = 8;
 const DELTAS: [(i8, i8); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
@@ -19,6 +23,21 @@ fn get_score(num_tiles: u32, tile_value: u32) -> u32 {
     }
 }
 
+fn flood(m: Move, val: u8, count: &mut u8, board: &mut [[u8; BOARD_SIZE]; BOARD_SIZE], visited: &mut [[bool; BOARD_SIZE]; BOARD_SIZE]) {
+    let (x, y) = m.pos;
+    if m.is_valid() {
+        if !visited[x][y] && board[x][y] == val {
+            board[x][y] = 0;
+            visited[x][y] = true;
+            *count += 1;
+            flood(Move { pos: (x-1, y) }, val, count, board, visited);
+            flood(Move { pos: (x+1, y) }, val, count, board, visited);
+            flood(Move { pos: (x, y-1) }, val, count, board, visited);
+            flood(Move { pos: (x, y+1) }, val, count, board, visited);
+        }
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 struct Move {
     // overload add operator
@@ -28,8 +47,8 @@ struct Move {
 #[allow(dead_code)]
 impl Move {
     fn is_valid(&self) -> bool {
-        self.pos.0 > 0 && self.pos.0 < BOARD_SIZE &&
-        self.pos.1 > 0 && self.pos.1 < BOARD_SIZE
+        self.pos.0 as i8 >= 0 && self.pos.0 < BOARD_SIZE &&
+        self.pos.1 as i8 >= 0 && self.pos.1 < BOARD_SIZE
     }
 }
 
@@ -53,7 +72,6 @@ struct Board2Hash {
 impl Board {
     fn new() -> Board {
         Board { board: [[0; BOARD_SIZE]; BOARD_SIZE], score: 0, mve: Move { pos: (0, 0) } }
-        // Board { board: [[0; 8]; 8], moves: Vec::new(), score: 0 }
     }
     
     fn collapse(&mut self) {
@@ -97,8 +115,6 @@ impl Board {
     }
 
     fn get_valid_moves(&self, valid_moves: &mut [Move]) -> usize {
-        // let mut valid_moves = Vec::new();
-
         let b = self.board.clone(); // TODO: local clone vs use reference
         let mut valid = [[0; 8]; 8];
 
@@ -155,6 +171,11 @@ impl Board {
                 }
             }
         }
+        // for i in 0..move_count/2 {
+        //     let tmp = valid_moves[i];
+        //     valid_moves[i] = valid_moves[move_count-1-i];
+        //     valid_moves[move_count-1-i] = tmp;
+        // }
         move_count
     }
 
@@ -190,27 +211,155 @@ impl Board {
         0
     }
 
+    fn click3(&self, m: Move) -> Board {
+        let mut board = self.board.clone();
+        let (x, y) = m.pos;
+        let val = board[x][y];
+        let val = unsafe { *board.get_unchecked(x).get_unchecked(y) };
+
+        
+        // TODO: use PEXT/PCMPEQB
+        let bool_board = board.map(|col| -> u8 {
+            let mut new_col = 0u8;
+            for i in 0..BOARD_SIZE {
+                new_col |= if col[i] == val { 1 } else { 0 } << i;
+            }
+            new_col
+        } );
+
+        let mut flood_board = [0u8; BOARD_SIZE];
+        flood_board[x] |= 1 << y;
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            // dilate columns TODO: pack bytes
+            for i in 0..BOARD_SIZE {
+                let dilated = flood_board[i] | (flood_board[i] << 1) | (flood_board[i] >> 1);
+                let masked  = dilated & bool_board[i];
+                let k = flood_board[i];
+                if flood_board[i] != flood_board[i] | masked {
+                    // update was made to the board
+                    changed = true;
+                    flood_board[i] |= masked;
+                }
+            }
+
+            // dilate rows
+            for i in 0..BOARD_SIZE {
+                let dilated = match i {
+                    0 => flood_board[0] | flood_board[i+1],
+                    7 => flood_board[i-1] & flood_board[i],
+                    _ => flood_board[i-1] | flood_board[i] | flood_board[i+1],
+                };
+                let masked = dilated & bool_board[i];
+                let k = flood_board[i];
+                if flood_board[i] != flood_board[i] | masked {
+                    changed = true;
+                    flood_board[i] |= masked;
+                }
+            }
+        }
+        let count = u64::count_ones(u64::from_ne_bytes(flood_board));
+
+        // println!("({x} {y}) {val}");
+        // println!("num iterations: {count}");
+        // println!("{:^18}{:^18}{:^18}", "board", "bool", "flood");
+        // for y in 0..BOARD_SIZE {
+        //     for x in 0..BOARD_SIZE {
+        //         print!("{} ", board[x][y]);
+        //     }
+        //     print!("  ");
+        //     for x in 0..BOARD_SIZE {
+        //         print!("{} ", (bool_board[x] & (1 << y)) >> y)
+        //     }
+        //     print!("  ");
+        //     for x in 0..BOARD_SIZE {
+        //         print!("{} ", (flood_board[x] & (1 << y)) >> y)
+        //     }
+        //     println!();
+        // }
+        // println!();
+
+        // for col in flood_board {
+        //     println!("{:08b}", col);
+        // }
+        // println!("");
+
+
+        for i in 0..BOARD_SIZE {
+            for j in 0..BOARD_SIZE {
+                board[i][j] = board[i][j] & !(0xff * ((flood_board[i] & (1 << j)) >> j));
+            }
+        }
+
+        board[x][y] = val + 1;
+        let mut new_board = Board {
+            board,
+            score: get_score(count, val as u32),
+            mve: m,
+        };
+        new_board.collapse();
+        new_board
+    }
+
+    fn click2(&self, m: Move) -> Board {
+        let (x, y) = m.pos;
+
+        let val = self.board[x][y];
+        let mut visited = [[false; BOARD_SIZE]; BOARD_SIZE];
+        let mut board = self.board.clone();
+        let mut count = 0;
+
+        flood(m, val, &mut count, &mut board, &mut visited);
+
+        board[x][y] = val + 1;
+
+        let score = get_score(count as u32, val as u32);
+        let mut new_board = Board { board, score, mve: m };
+        new_board.collapse();
+        new_board
+    }
+
     fn click(&self, m: Move) -> Board {
         let (x, y) = m.pos;
         let val = self.board[x][y];
         let mut visited = [[false; 8]; 8];
         visited[x][y] = true;
-        let mut open_cells = vec![Move {pos: (x, y)}];
-        let mut closed_cells: Vec<Move> = Vec::new();
-        while open_cells.len() > 0 {
-            let (x, y) = open_cells.pop().unwrap().pos;
-            closed_cells.push(Move { pos: (x, y) } );
+
+        // no need to initialize 
+        let mut closed_cells = unsafe {
+            let data: [MaybeUninit<Move>; 32] = MaybeUninit::uninit().assume_init();
+            std::mem::transmute::<_, [Move; 32]>(data)
+        } ;
+        let mut open_cells = unsafe {
+            let data: [MaybeUninit<Move>; 32] = MaybeUninit::uninit().assume_init();
+            std::mem::transmute::<_, [Move; 32]>(data)
+        } ;
+
+        let mut closed_count = 0;
+        let mut open_count = 1;
+
+        open_cells[0] = m;
+
+        while open_count > 0 {
+            let (x, y) = open_cells[open_count-1].pos;
+            open_count -= 1;
+            closed_cells[closed_count].pos = (x, y);
+            closed_count += 1;
             for (dx, dy) in DELTAS.iter() {
                 let (nx, ny) = (dx + x as i8, dy + y as i8);
                 if nx >= 0 && nx < BOARD_SIZE as i8 && ny >= 0 && ny < BOARD_SIZE as i8 && !visited[nx as usize][ny as usize] {
                     visited[nx as usize][ny as usize] = true;
                     if self.board[nx as usize][ny as usize] == val {
-                        open_cells.push(Move {pos: (nx as usize, ny as usize) } );
+                        open_cells[open_count].pos = (nx as usize, ny as usize);
+                        open_count += 1;
                     }
                 }
             }
         }
-        let score = get_score(closed_cells.len() as u32, val as u32);
+        
+        let score = get_score(closed_count as u32, val as u32);
         
         let mut new_board = Board {
             board: self.board.clone(),
@@ -218,10 +367,11 @@ impl Board {
             score: score,
         };
 
-        for m in closed_cells.iter() {
+        for m in &mut closed_cells[0..closed_count] {
             new_board.board[m.pos.0 as usize][m.pos.1 as usize] = 0;
             new_board.board[x as usize][y as usize] = val + 1;
         }
+
         new_board.collapse();
         new_board
     }
@@ -311,15 +461,12 @@ fn solve(starting_board: Board) {
                 stack.frame_count -= 1;
             },
             _ => {
-                // if stack.frame_count < 4 {
-                //     for _ in 0..stack.frame_count-1 {
-                //         print!("-");
-                //     }
-                //     println!("progress: {}", stack.frames[stack.frame_count-1].num_moves);
-                // }
                 let m = stack.frames[stack.frame_count-1].moves.get(stack.frames[stack.frame_count-1].num_moves-1).unwrap(); // TODO: get_unchecked
                 stack.frames[stack.frame_count-1].num_moves -= 1;
-                stack.frames[stack.frame_count].board = stack.frames[stack.frame_count-1].board.click(*m);
+
+                // stack.frames[stack.frame_count].board = stack.frames[stack.frame_count-1].board.click(*m);
+                // stack.frames[stack.frame_count].board = stack.frames[stack.frame_count-1].board.click2(*m);
+                stack.frames[stack.frame_count].board = stack.frames[stack.frame_count-1].board.click3(*m);
                 stack.frames[stack.frame_count].board.score += stack.frames[stack.frame_count-1].board.score;
 
                 let h = stack.frames[stack.frame_count].board.hash();
@@ -362,10 +509,7 @@ fn main() {
 
     board.collapse();
 
-    println!("board: {}", board);
-    println!("score: {}", board.score);
-    println!("score: {}", board.click(Move {pos: (0, 0)}).score);
-    println!("score: {}", board.click(Move {pos: (1, 1)}).score);
+    // println!("score: {}", board.click3(Move {pos: (0, 3)}).score);
     println!("=============");
 
     // print!("Moves:\n[",);
