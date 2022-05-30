@@ -46,7 +46,7 @@ def get_avg_col(image):
     return total
 
 def parse_board(image):
-    offset = (31, 798)
+    offset = (31, 850)
     tilesize = 127
     margin1 = 2
     margin2 = 96
@@ -78,8 +78,8 @@ def tap(x, y, delay=0.75):
 
 def solve(moves):
     delta = 127
-    offsetX =  30 + delta // 2
-    offsetY = 557 + delta // 2
+    offsetX =  31 + delta // 2
+    offsetY = 850 + delta // 2
 
     for x, y in moves:
         tx = x * delta + offsetX
@@ -89,22 +89,31 @@ def solve(moves):
 
 if __name__ == "__main__":
 
-    #os.system("adb exec-out screencap -p > screen.png")
+    # os.system("adb exec-out screencap -p > screen.png")
 
-    img = Image.open("screen.png")
+    img = Image.open("screen_fast.png")
     board = parse_board(img)
     board = " ".join(" ".join(str(c) for c in row) for row in board)
+
+    # import random
+    # board = " ".join([str(random.randint(0, 2)) for i in range(64)])
 
     print(board)
     
     proc = sp.Popen(f"target\\release\\jca.exe {sys.argv[1]} {board}", stdout=sp.PIPE, universal_newlines=True)
     output = ""
-    for line in iter(proc.stdout.readline, ""):
-        output += line
-        print(line, end="", flush=True)
+    try:
+        for line in iter(proc.stdout.readline, ""):
+            output += line
+            print(line, end="", flush=True)
+    except KeyboardInterrupt:
+        pass
 
-    # moves = eval(output.splitlines()[-1].split(":")[1])
-    # print(moves)
+    idx = -1
+    if "time" in output.splitlines()[-1]:
+        idx = -2
+    moves = eval(output.splitlines()[idx].split("moves:")[1])
+    print(moves)
 
     # solve(moves)
 
